@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SpotLive Icon Generator</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      background: #030712;
+      color: white;
+    }
+    canvas {
+      border: 1px solid #333;
+      margin: 10px;
+    }
+    .instructions {
+      background: #1f2937;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h1>SpotLive PWA Icon Generator</h1>
+  <div class="instructions">
+    <p>This page generates PWA icons for SpotLive.</p>
+    <p>Click the button below to generate and download all required icon sizes.</p>
+  </div>
+  
+  <button onclick="generateIcons()" style="padding: 10px 20px; background: #7c3aed; color: white; border: none; border-radius: 5px; cursor: pointer;">
+    Generate Icons
+  </button>
+  
+  <div id="preview"></div>
+
+  <script>
+    function generateIcons() {
+      const sizes = [72, 96, 128, 144, 152, 192, 384, 512];
+      const preview = document.getElementById('preview');
+      preview.innerHTML = '<h2>Generated Icons:</h2>';
+      
+      sizes.forEach(size => {
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        
+        // Background
+        ctx.fillStyle = '#030712';
+        ctx.fillRect(0, 0, size, size);
+        
+        // Purple gradient circle
+        const gradient = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+        gradient.addColorStop(0, '#7c3aed');
+        gradient.addColorStop(1, '#4c1d95');
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(size/2, size/2, size/2 - size*0.1, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Map pin icon (simplified)
+        ctx.fillStyle = 'white';
+        ctx.strokeStyle = '#030712';
+        ctx.lineWidth = size * 0.02;
+        
+        // Pin shape
+        const pinSize = size * 0.4;
+        const pinX = size / 2;
+        const pinY = size / 2 - size * 0.05;
+        
+        ctx.beginPath();
+        ctx.moveTo(pinX, pinY - pinSize * 0.5);
+        ctx.lineTo(pinX - pinSize * 0.3, pinY);
+        ctx.lineTo(pinX, pinY + pinSize * 0.3);
+        ctx.lineTo(pinX + pinSize * 0.3, pinY);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        
+        // Inner circle
+        ctx.fillStyle = '#7c3aed';
+        ctx.beginPath();
+        ctx.arc(pinX, pinY, pinSize * 0.15, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Download
+        canvas.toBlob(blob => {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `icon-${size}x${size}.png`;
+          a.click();
+          URL.revokeObjectURL(url);
+        });
+        
+        preview.appendChild(canvas);
+      });
+      
+      alert('Icons generated! Check your downloads folder.');
+    }
+  </script>
+</body>
+</html>
+

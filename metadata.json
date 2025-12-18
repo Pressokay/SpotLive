@@ -1,0 +1,9 @@
+{
+  "name": "SpotLive",
+  "description": "Mobile-first social discovery app for real-time urban vibes.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
