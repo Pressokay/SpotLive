@@ -7,8 +7,8 @@
 Créez un fichier `.env.local` à la racine du projet avec :
 
 ```env
-VITE_SUPABASE_URL=https://alxtfxmerygxgpkwvoka.supabase.co
-VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFseHRmeG1lcnlneGdwa3d2b2thIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYwNjU0NTksImV4cCI6MjA4MTY0MTQ1OX0.OLtrJRHaYl51831WdoKgyaC9omuaJzS0ID-3CLTucF4
+VITE_SUPABASE_URL=YOUR_SUPABASE_URL
+VITE_SUPABASE_ANON_KEY=YOUR_PUBLIC_ANON_KEY
 ```
 
 ### 2. Exécuter le script SQL dans Supabase
