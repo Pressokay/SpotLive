@@ -10,6 +10,13 @@ export default defineConfig(({ mode }) => {
         host: '0.0.0.0',
       },
       plugins: [react()],
+      // Forcer Vite à pré-bundler / ne pas externaliser le client Supabase
+      optimizeDeps: {
+        include: ['@supabase/supabase-js']
+      },
+      ssr: {
+        noExternal: ['@supabase/supabase-js']
+      },
       define: {
         'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
         'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
