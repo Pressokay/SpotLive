@@ -244,6 +244,21 @@ const App: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
+  // Calculer displayedSpots pour MapView
+  const displayedSpots = useMemo(() => {
+    return activeStories.map(story => ({
+      id: story.id,
+      latitude: story.latitude,
+      longitude: story.longitude,
+      locationName: story.locationName,
+      username: story.username,
+      userAvatar: story.userAvatar,
+      imageUrl: story.imageUrl,
+      vibeTags: story.vibeTags,
+      timestamp: story.timestamp
+    }));
+  }, [activeStories]);
+
   const handleSpotSelectFromMap = (spot: Spot) => {
     setCurrentView(ViewState.FEED);
     // Optionally auto-scroll to spot
@@ -439,6 +454,14 @@ const App: React.FC = () => {
     loadStories();
   };
 
+  // Filtrer les stories affichées
+  const filteredStories = useMemo(() => {
+    if (selectedFilter === 'All') return activeStories;
+    return activeStories.filter(story => 
+      story.vibeTags.some(tag => tag.toLowerCase().includes(selectedFilter.toLowerCase()))
+    );
+  }, [activeStories, selectedFilter]);
+
   if (showWelcome) {
      return (
         <div className="h-full w-full bg-gray-950 flex flex-col items-center justify-center p-8 text-center relative overflow-hidden">
@@ -577,9 +600,7 @@ const App: React.FC = () => {
                 {FILTERS.map(filter => (
                     <button
                         key={filter}
-                        onClick={() => {
-                            setSelectedFilter(filter);
-                        }}
+                        onClick={() => setSelectedFilter(filter)}
                         className={`px-4 py-2 rounded-full text-sm whitespace-nowrap transition-colors ${
                             selectedFilter === filter 
                             ? 'bg-white text-black font-bold shadow-lg' 
@@ -589,6 +610,25 @@ const App: React.FC = () => {
                         {filter}
                     </button>
                 ))}
+            </div>
+
+            {/* Stories List */}
+            <div className="space-y-4">
+                {filteredStories.length > 0 ? (
+                    filteredStories.map(story => (
+                        <StoryCard 
+                            key={story.id} 
+                            story={story}
+                            currentUserId={user?.id}
+                            isLiked={likedStoryIds.has(story.id)}
+                            onToggleLike={handleToggleLikeStory}
+                            onDelete={handleDeleteStory}
+                            onReport={handleReportStory}
+                        />
+                    ))
+                ) : (
+                    <div className="text-center py-16">
+                        <p className="text-gray-500 mb-4">{t('app.feed.noStories')}</p>
                         <button 
                             onClick={() => handleNavigation(ViewState.POST)}
                             className="mt-4 text-purple-400 font-medium"
