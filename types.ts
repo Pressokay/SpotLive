@@ -29,6 +29,7 @@ export interface Story {
   latitude: number;
   longitude: number;
   locationName: string; // "Le Petit Bateau" or custom
+  countryCode?: string; // ISO 3166-1 alpha-2 (ex: 'FR', 'GN', 'US')
   
   // Social
   likes: number;

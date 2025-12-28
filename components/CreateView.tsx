@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Camera, X, Loader2, Repeat, Check, MapPin, Zap } from './Icon';
+import { Camera, X, Loader2, Repeat, Check, MapPin, Zap, FlipHorizontal } from './Icon';
 import { useLanguage } from '../translations';
 
 interface CreateViewProps {
@@ -16,6 +16,8 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
   const [capturedMedia, setCapturedMedia] = useState<string | null>(null); 
   const [isRecording, setIsRecording] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment'); // 'user' = front, 'environment' = back
+  const [isSwitchingCamera, setIsSwitchingCamera] = useState(false);
   
   const [locationName, setLocationName] = useState<string>(t('create.locating'));
   const [currentLat, setCurrentLat] = useState<number | null>(null);
@@ -67,8 +69,18 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
 
     async function startCamera() {
       try {
+        // Arrêter l'ancien stream s'il existe
+        if (stream) {
+          stream.getTracks().forEach(track => track.stop());
+        }
+
         const mediaStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', aspectRatio: 9/16 },
+          video: { 
+            facingMode: facingMode, 
+            aspectRatio: 9/16,
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+          },
           audio: mode === 'VIDEO'
         });
         
@@ -76,15 +88,58 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
           setStream(mediaStream);
           if (videoRef.current) {
             videoRef.current.srcObject = mediaStream;
+            // Attendre que la vidéo soit prête avant de continuer
+            await new Promise((resolve) => {
+              if (videoRef.current) {
+                videoRef.current.onloadedmetadata = () => resolve(undefined);
+              } else {
+                resolve(undefined);
+              }
+            });
           }
+          setIsSwitchingCamera(false);
+        } else {
+          // Si le composant est démonté, arrêter le stream
+          mediaStream.getTracks().forEach(track => track.stop());
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error("Camera error:", err);
-        setPermissionError(true);
+        setIsSwitchingCamera(false);
+        
+        // Gestion d'erreurs spécifiques
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+          setPermissionError(true);
+        } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+          // Pas de caméra disponible, essayer l'autre caméra
+          if (facingMode === 'user') {
+            // Si on essayait la caméra avant et qu'elle n'existe pas, revenir à l'arrière
+            setFacingMode('environment');
+          }
+        } else if (err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') {
+          // Contrainte non satisfaite (ex: aspectRatio), essayer sans contrainte
+          console.warn('Camera constraint not satisfied, trying without constraints');
+          try {
+            const fallbackStream = await navigator.mediaDevices.getUserMedia({
+              video: { facingMode: facingMode },
+              audio: mode === 'VIDEO'
+            });
+            if (mounted) {
+              setStream(fallbackStream);
+              if (videoRef.current) {
+                videoRef.current.srcObject = fallbackStream;
+              }
+              setIsSwitchingCamera(false);
+            }
+          } catch (fallbackErr) {
+            setPermissionError(true);
+          }
+        } else {
+          setPermissionError(true);
+        }
       }
     }
 
-    if (!capturedMedia) {
+    if (!capturedMedia && !isRecording) {
       startCamera();
     }
 
@@ -94,7 +149,7 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
         stream.getTracks().forEach(track => track.stop());
       }
     };
-  }, [mode, capturedMedia]);
+  }, [mode, capturedMedia, facingMode]);
 
   const handleCapture = async () => {
     if (mode === 'PHOTO') {
@@ -154,6 +209,24 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
     setHashtags('');
   };
 
+  // Basculer entre caméra avant et arrière
+  const handleSwitchCamera = async () => {
+    if (isSwitchingCamera || isRecording || capturedMedia) return;
+    
+    setIsSwitchingCamera(true);
+    
+    // Arrêter l'ancien stream
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      setStream(null);
+    }
+    
+    // Basculer la caméra
+    setFacingMode(prev => prev === 'user' ? 'environment' : 'user');
+    
+    // Le useEffect se chargera de démarrer la nouvelle caméra
+  };
+
   const handlePublish = () => {
     if (!capturedMedia) return;
     setLoading(true);
@@ -191,13 +264,29 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
           <X size={24} />
         </button>
         
-        {!capturedMedia && (
+        <div className="flex items-center space-x-2">
+          {!capturedMedia && !isRecording && (
+            <button 
+              onClick={handleSwitchCamera}
+              disabled={isSwitchingCamera}
+              className="p-2 bg-black/40 backdrop-blur-md rounded-full text-white hover:bg-black/60 transition-colors disabled:opacity-50 disabled:cursor-not-allowed pointer-events-auto border border-white/10"
+              title={facingMode === 'user' ? 'Caméra arrière' : 'Caméra avant'}
+            >
+              {isSwitchingCamera ? (
+                <Loader2 size={20} className="animate-spin" />
+              ) : (
+                <FlipHorizontal size={20} />
+              )}
+            </button>
+          )}
+          
+          {!capturedMedia && (
             <div className="flex items-center space-x-2 bg-black/40 backdrop-blur-md px-4 py-2 rounded-full border border-white/10">
-                <MapPin size={14} className="text-purple-400" />
-                <span className="text-sm font-semibold text-white">{locationName}</span>
+              <MapPin size={14} className="text-purple-400" />
+              <span className="text-sm font-semibold text-white">{locationName}</span>
             </div>
-        )}
-        <div className="w-10"></div>
+          )}
+        </div>
       </div>
 
       <div className="flex-1 relative bg-gray-900">

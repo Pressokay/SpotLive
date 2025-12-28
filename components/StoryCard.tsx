@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Story, Spot, User } from '../types';
-import { MapPin, Clock, Share2, Trash2, Heart } from './Icon';
+import { MapPin, Clock, Share2, Trash2, Heart, Flag } from './Icon';
 
 interface StoryCardProps {
   story: Story;
@@ -10,6 +10,7 @@ interface StoryCardProps {
   onDelete: (storyId: string) => void;
   hasLiked?: boolean;
   onToggleLike?: () => void;
+  onReport?: (storyId: string) => void;
 }
 
 const StoryCard: React.FC<StoryCardProps> = ({ 
@@ -19,7 +20,8 @@ const StoryCard: React.FC<StoryCardProps> = ({
   onClick, 
   onDelete, 
   hasLiked, 
-  onToggleLike
+  onToggleLike,
+  onReport
 }) => {
   const [copied, setCopied] = useState(false);
 
@@ -39,9 +41,18 @@ const StoryCard: React.FC<StoryCardProps> = ({
     }
   };
 
-  const handleLikeClick = (e: React.MouseEvent) => {
+  const [isLiking, setIsLiking] = useState(false);
+
+  const handleLikeClick = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (onToggleLike) onToggleLike();
+    if (!onToggleLike || isLiking) return;
+    
+    setIsLiking(true);
+    try {
+      await onToggleLike();
+    } finally {
+      setIsLiking(false);
+    }
   };
 
   const handleShareClick = async (e: React.MouseEvent) => {
@@ -129,9 +140,20 @@ const StoryCard: React.FC<StoryCardProps> = ({
                 className="flex items-center space-x-1.5 group/like"
              >
                 <div className={`p-2 rounded-full transition-all ${hasLiked ? 'text-pink-500 bg-pink-500/20' : 'text-white hover:bg-white/10'}`}>
-                    <Heart size={20} className={`transition-transform duration-300 ${hasLiked ? "fill-pink-500 scale-110" : "group-hover/like:scale-110"}`} />
-                </div>
-                <span className={`text-sm font-bold ${hasLiked ? 'text-pink-400' : 'text-white'}`}>{story.likes}</span>
+            {isLiking ? (
+              <div className="w-5 h-5 flex items-center justify-center">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-current"></div>
+              </div>
+            ) : (
+              <Heart 
+                size={20} 
+                className={`transition-transform duration-300 ${hasLiked ? "fill-pink-500 scale-110" : "group-hover/like:scale-110"}`} 
+              />
+            )}
+          </div>
+          <span className={`text-sm font-bold min-w-[20px] text-center ${hasLiked ? 'text-pink-400' : 'text-white'}`}>
+            {isLiking ? (hasLiked ? story.likes - 1 : story.likes + 1) : story.likes}
+          </span>
              </button>
 
              <div className="flex items-center space-x-3">
@@ -146,6 +168,18 @@ const StoryCard: React.FC<StoryCardProps> = ({
                     )}
                     <Share2 size={20} />
                 </button>
+                {!isOwner && currentUser && onReport && (
+                  <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onReport(story.id);
+                      }}
+                      className="text-white hover:text-red-400 p-2 rounded-full hover:bg-white/10 active:scale-95 transition-transform"
+                      title="Signaler"
+                  >
+                      <Flag size={18} />
+                  </button>
+                )}
              </div>
         </div>
       </div>

@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { PullToRefresh } from './components/PullToRefresh';
 import { ViewState, Spot, Story, User } from './types';
 import { INITIAL_STORIES, FILTERS, KNOWN_NEIGHBORHOODS } from './constants';
 import Navbar from './components/Navbar';
@@ -7,12 +8,27 @@ import StoryCard from './components/StoryCard';
 import CreateView from './components/CreateView';
 import AuthView from './components/AuthView';
 import ProfileView from './components/ProfileView';
-import { MapPin } from './components/Icon';
+import CountrySelector from './components/CountrySelector';
+import ReportModal from './components/ReportModal';
+import { MapPin, RefreshCw } from './components/Icon';
 import { useLanguage } from './translations';
-import { storiesService, usersService } from './services/supabaseService';
+import { storiesService, usersService, supabase } from './services/supabaseService';
+import { detectCountryFromCoordinates, getCountryName, getCountryFlag } from './services/countryService';
 
 // Default lifetime: 24 hours
-const STORY_LIFETIME_MS = 24 * 60 * 60 * 1000; 
+const STORY_LIFETIME_MS = 24 * 60 * 60 * 1000;
+
+// Formater le temps écoulé depuis la dernière mise à jour
+const formatTimeAgo = (date: Date): string => {
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return `Il y a ${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `Il y a ${minutes}min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `Il y a ${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `Il y a ${days}j`;
+};
 
 const getNeighborhoodName = (lat: number, lon: number, defaultCity: string): string => {
     // Check if near any known neighborhood (approx 2.5km radius)
@@ -34,21 +50,52 @@ const App: React.FC = () => {
   const [userLocation, setUserLocation] = useState<{lat: number, lng: number} | null>(null);
   const [cityName, setCityName] = useState<string>('World');
   const [isLocating, setIsLocating] = useState(true);
+  
+  // Country State
+  const [userCountryCode, setUserCountryCode] = useState<string | null>(null);
+  const [selectedCountryCode, setSelectedCountryCode] = useState<string | null>(null);
 
   // Master state: List of active stories. 
   const [activeStories, setActiveStories] = useState<Story[]>(INITIAL_STORIES);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const lastRefreshTime = useRef<Date>(new Date());
   
   // State for liked stories (IDs)
   const [likedStoryIds, setLikedStoryIds] = useState<Set<string>>(new Set());
+  const [isLoadingLikes, setIsLoadingLikes] = useState(true);
   
   const [selectedFilter, setSelectedFilter] = useState('All');
   const [showWelcome, setShowWelcome] = useState(true);
   const [pendingView, setPendingView] = useState<ViewState | null>(null);
+  const [showCountrySelector, setShowCountrySelector] = useState(false);
+  const [lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null);
+  const [reportingStoryId, setReportingStoryId] = useState<string | null>(null);
 
-  // --- 0. Load user from localStorage on startup ---
+  // Charger les likes de l'utilisateur
+  const loadUserLikes = useCallback(async () => {
+    if (!user?.id) return;
+    
+    setIsLoadingLikes(true);
+    try {
+      const likes = await storiesService.getUserLikes(user.id);
+      setLikedStoryIds(likes);
+    } catch (error) {
+      console.error('Failed to load user likes:', error);
+    } finally {
+      setIsLoadingLikes(false);
+    }
+  }, [user?.id]);
+
+  // Charger les likes au chargement et quand l'utilisateur change
+  useEffect(() => {
+    loadUserLikes();
+  }, [loadUserLikes]);
+
+  // --- 0. Load user and country preferences from localStorage on startup ---
   useEffect(() => {
     const savedUserId = localStorage.getItem('spotlive_user_id');
     const savedUsername = localStorage.getItem('spotlive_username');
+    const savedCountryCode = localStorage.getItem('spotlive_country_code');
     
     if (savedUserId && savedUsername) {
       usersService.getUser(savedUserId).then(user => {
@@ -61,27 +108,14 @@ const App: React.FC = () => {
         localStorage.removeItem('spotlive_username');
       });
     }
+    
+    // Restaurer le pays sélectionné
+    if (savedCountryCode) {
+      setSelectedCountryCode(savedCountryCode);
+    }
   }, []);
 
-  // --- 0.5. Load stories from Supabase on startup ---
-  useEffect(() => {
-    const loadStories = async () => {
-      try {
-        const stories = await storiesService.getActiveStories();
-        setActiveStories(stories);
-      } catch (error) {
-        console.error('Error loading stories:', error);
-      }
-    };
-    
-    loadStories();
-    
-    // Rafraîchir toutes les 30 secondes
-    const interval = setInterval(loadStories, 30000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // --- 1. Geolocation & City Name Logic ---
+  // --- 1. Geolocation & Country Detection ---
   useEffect(() => {
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
@@ -95,8 +129,20 @@ const App: React.FC = () => {
           const data = await response.json();
           const city = data.address?.city || data.address?.town || data.address?.village || data.address?.county || 'Local';
           setCityName(city);
+          
+          // Détecter le pays
+          const countryCode = data.address?.country_code?.toUpperCase();
+          if (countryCode && countryCode.length === 2) {
+            setUserCountryCode(countryCode);
+            
+            // Si aucun pays n'est sélectionné, utiliser le pays de l'utilisateur par défaut
+            if (!selectedCountryCode && !localStorage.getItem('spotlive_country_code')) {
+              setSelectedCountryCode(countryCode);
+              localStorage.setItem('spotlive_country_code', countryCode);
+            }
+          }
         } catch (e) {
-          console.warn("Could not fetch city name", e);
+          console.warn("Could not fetch location data", e);
           setCityName('Local');
         }
       },
@@ -107,80 +153,83 @@ const App: React.FC = () => {
       },
       { enableHighAccuracy: true }
     );
-  }, []);
+  }, [selectedCountryCode]);
 
-  // --- 2. Dynamic Spot Calculation (Clustering) ---
-  const calculatedSpots = useMemo(() => {
-    const clusters: Story[][] = [];
-    const THRESHOLD = 0.0015; // Approx 150m-200m
-
-    activeStories.forEach(story => {
-      let added = false;
-      for (const cluster of clusters) {
-        // Simple distance to first element of cluster
-        const center = cluster[0];
-        const dist = Math.sqrt(
-            Math.pow(story.latitude - center.latitude, 2) + 
-            Math.pow(story.longitude - center.longitude, 2)
-        );
-        if (dist < THRESHOLD) {
-          cluster.push(story);
-          added = true;
-          break;
-        }
-      }
-      if (!added) {
-        clusters.push([story]);
-      }
-    });
-
-    return clusters.map((cluster, index) => {
-      const centerStory = cluster[0];
-      const sanitizedLoc = centerStory.locationName.replace(/[^a-zA-Z0-9]/g, '');
-      const spotId = `spot-${sanitizedLoc}`; 
-      
-      // Determine neighborhood
-      const hood = getNeighborhoodName(centerStory.latitude, centerStory.longitude, cityName);
-      
-      // Calculate total likes for the spot
-      const totalLikes = cluster.reduce((sum, s) => sum + (s.likes || 0), 0);
-      
-      // Vibe Score: weighted by stories count and likes.
-      // E.g. 1 story = 10 pts, 1 like = 2 pts.
-      const rawScore = (cluster.length * 10) + (totalLikes * 2);
-
-      return {
-        id: spotId,
-        name: centerStory.locationName,
-        neighborhood: hood,
-        latitude: centerStory.latitude,
-        longitude: centerStory.longitude,
-        description: `${cluster.length} active stories`,
-        activeStories: cluster.sort((a,b) => (b.likes - a.likes) || (b.timestamp - a.timestamp)), // Sort by likes then time
-        vibeScore: Math.min(100, rawScore)
-      } as Spot;
-    });
-  }, [activeStories, cityName]);
-
-  // --- 3. Filter Logic ---
-  const displayedSpots = useMemo(() => {
-    let spots = [...calculatedSpots];
-
-    if (selectedFilter === 'Near Me' && userLocation) {
-        // Sort by distance
-        spots.sort((a, b) => {
-            const distA = Math.sqrt(Math.pow(a.latitude - userLocation.lat, 2) + Math.pow(a.longitude - userLocation.lng, 2));
-            const distB = Math.sqrt(Math.pow(b.latitude - userLocation.lat, 2) + Math.pow(b.longitude - userLocation.lng, 2));
-            return distA - distB;
-        });
-    } else if (selectedFilter === 'Trending') {
-        // Sort by Vibe Score (Activity + Likes)
-        spots.sort((a, b) => b.vibeScore - a.vibeScore);
+  // --- 0.5. Load stories from Supabase on startup (filtrées par pays) ---
+  const loadStories = useCallback(async () => {
+    try {
+      // Utiliser le pays sélectionné, ou le pays de l'utilisateur par défaut
+      const countryToFilter = selectedCountryCode || userCountryCode;
+      const stories = await storiesService.getActiveStories(countryToFilter || null);
+      setActiveStories(stories);
+      const now = new Date();
+      lastRefreshTime.current = now;
+      setLastUpdateTime(now);
+      return true;
+    } catch (error) {
+      console.error('Error loading stories:', error);
+      return false;
     }
+  }, [selectedCountryCode, userCountryCode]);
+
+  // Chargement initial des stories
+  useEffect(() => {
+    loadStories();
+  }, [loadStories]);
+
+  // Fonction de rafraîchissement
+  const handleRefresh = async () => {
+    if (isRefreshing) return;
     
-    return spots;
-  }, [calculatedSpots, selectedFilter, userLocation]);
-  
+    setIsRefreshing(true);
+    try {
+      // Recharger les stories et les likes
+      await Promise.all([
+        loadStories(),
+        user?.id ? loadUserLikes() : Promise.resolve()
+      ]);
+    } catch (error) {
+      console.error('Error refreshing:', error);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  // Abonnement aux mises à jour en temps réel (avec debounce)
+  useEffect(() => {
+    let refreshTimeout: NodeJS.Timeout | null = null;
+    
+    const subscription = supabase
+      .from('stories')
+      .on('*', (payload) => {
+        console.log('Change received!', payload);
+        // Debounce: rafraîchir seulement si la dernière mise à jour date de plus de 5 secondes
+        const now = new Date();
+        const timeSinceLastRefresh = (now.getTime() - lastRefreshTime.current.getTime()) / 1000;
+        
+        if (timeSinceLastRefresh > 5) {
+          // Annuler le timeout précédent si existe
+          if (refreshTimeout) {
+            clearTimeout(refreshTimeout);
+          }
+          
+          // Attendre 1 seconde avant de rafraîchir (debounce)
+          refreshTimeout = setTimeout(() => {
+            if (!isRefreshing) {
+              loadStories();
+            }
+          }, 1000);
+        }
+      })
+      .subscribe();
+
+    return () => {
+      if (refreshTimeout) {
+        clearTimeout(refreshTimeout);
+      }
+      supabase.removeSubscription(subscription);
+    };
+  }, [loadStories, isRefreshing]); 
 
   // Cleanup Loop: Automatically remove expired stories
   useEffect(() => {
@@ -231,6 +280,17 @@ const App: React.FC = () => {
   const handlePostSuccess = async (data: { locationName: string; caption: string; hashtags: string[]; media: string; isVideo: boolean; lat: number; lng: number }) => {
     if (!user) return;
 
+    // Détecter le pays depuis les coordonnées
+    let countryCode = 'XX'; // Fallback
+    try {
+      const detectedCountry = await detectCountryFromCoordinates(data.lat, data.lng);
+      if (detectedCountry) {
+        countryCode = detectedCountry;
+      }
+    } catch (error) {
+      console.warn('Could not detect country for story:', error);
+    }
+
     const newStory: Story = {
       id: `story_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       userId: user.id,
@@ -244,6 +304,7 @@ const App: React.FC = () => {
       latitude: data.lat,
       longitude: data.lng,
       locationName: data.locationName,
+      countryCode: countryCode,
       likes: 0
     };
 
@@ -285,8 +346,9 @@ const App: React.FC = () => {
   };
 
   const handleToggleLikeStory = async (storyId: string) => {
+    if (!user?.id) return;
+    
     const isLiking = !likedStoryIds.has(storyId);
-    const increment = isLiking ? 1 : -1;
     
     // Mettre à jour l'état local immédiatement (optimistic update)
     setLikedStoryIds(prev => {
@@ -299,18 +361,42 @@ const App: React.FC = () => {
       return next;
     });
     
-    setActiveStories(stories => stories.map(s => {
-      if (s.id === storyId) {
-        return { ...s, likes: (s.likes || 0) + increment };
-      }
-      return s;
-    }));
+    // Sauvegarder l'ancien nombre de likes pour le rollback si nécessaire
+    const previousLikes = activeStories.find(s => s.id === storyId)?.likes || 0;
+    
+    setActiveStories(stories => 
+      stories.map(s => 
+        s.id === storyId 
+          ? { ...s, likes: isLiking ? previousLikes + 1 : Math.max(0, previousLikes - 1) } 
+          : s
+      )
+    );
     
     // Synchroniser avec Supabase
     try {
-      await storiesService.toggleLike(storyId, increment);
+      const result = await storiesService.toggleLike(storyId, user.id);
+      
+      if (result) {
+        // Mettre à jour avec les données du serveur
+        setActiveStories(stories => 
+          stories.map(s => 
+            s.id === storyId ? { ...s, likes: result.likes } : s
+          )
+        );
+        
+        setLikedStoryIds(prev => {
+          const next = new Set(prev);
+          if (result.hasLiked) {
+            next.add(storyId);
+          } else {
+            next.delete(storyId);
+          }
+          return next;
+        });
+      }
     } catch (error) {
       console.error('Error toggling like:', error);
+      
       // Revert en cas d'erreur
       setLikedStoryIds(prev => {
         const next = new Set(prev);
@@ -322,12 +408,11 @@ const App: React.FC = () => {
         return next;
       });
       
-      setActiveStories(stories => stories.map(s => {
-        if (s.id === storyId) {
-          return { ...s, likes: (s.likes || 0) - increment };
-        }
-        return s;
-      }));
+      setActiveStories(stories => 
+        stories.map(s => 
+          s.id === storyId ? { ...s, likes: previousLikes } : s
+        )
+      );
     }
   };
 
@@ -336,6 +421,22 @@ const App: React.FC = () => {
       localStorage.removeItem('spotlive_username');
       setUser(null);
       setCurrentView(ViewState.FEED);
+  };
+
+  const handleReportStory = (storyId: string) => {
+    if (!user) {
+      // Rediriger vers l'auth si pas connecté
+      setPendingView(ViewState.FEED);
+      setCurrentView(ViewState.AUTH);
+      return;
+    }
+    setReportingStoryId(storyId);
+  };
+
+  const handleReportSuccess = (message: string) => {
+    alert(message);
+    // Optionnel : recharger les stories pour masquer celle qui a été signalée
+    loadStories();
   };
 
   if (showWelcome) {
@@ -414,22 +515,58 @@ const App: React.FC = () => {
           <div className="pb-24 pt-4 px-4 overflow-y-auto h-full no-scrollbar">
             {/* Header */}
             <div className="flex items-center justify-between mb-6">
-                <div>
+                <div className="flex-1">
                     <h1 className="text-2xl font-bold text-white">{t('app.feed.title')}</h1>
-                    <p className="text-xs text-gray-400 flex items-center">
-                        <span className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></span>
-                        {activeStories.length} {t('app.feed.activeStories')} • {cityName}
-                    </p>
+                    <div className="flex items-center space-x-2 mt-1 flex-wrap gap-2">
+                        <p className="text-xs text-gray-400 flex items-center">
+                            <span className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></span>
+                            {activeStories.length} {t('app.feed.activeStories')} • {cityName}
+                        </p>
+                        {/* Last Update Indicator */}
+                        {lastUpdateTime && (
+                            <p className="text-xs text-gray-500">
+                                {formatTimeAgo(lastUpdateTime)}
+                            </p>
+                        )}
+                        {/* Country Selector Button */}
+                        <button
+                            onClick={() => setShowCountrySelector(true)}
+                            className="flex items-center space-x-1 px-2 py-1 bg-gray-800 hover:bg-gray-700 rounded-full border border-gray-700 transition-colors"
+                        >
+                            <span className="text-sm">
+                                {selectedCountryCode ? getCountryFlag(selectedCountryCode) : '🌍'}
+                            </span>
+                            <span className="text-xs text-gray-300">
+                                {selectedCountryCode ? getCountryName(selectedCountryCode) : 'Tous'}
+                            </span>
+                        </button>
+                        {/* Refresh Button */}
+                        <button
+                            onClick={handleRefresh}
+                            disabled={isRefreshing}
+                            className={`p-1.5 rounded-full transition-all ${
+                                isRefreshing
+                                    ? 'bg-purple-600 text-white cursor-wait'
+                                    : 'bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white'
+                            }`}
+                            title="Rafraîchir"
+                        >
+                            <RefreshCw 
+                                size={14} 
+                                className={isRefreshing ? 'animate-spin' : ''}
+                            />
+                        </button>
+                    </div>
                 </div>
                 {!user ? (
                      <button 
                         onClick={() => handleNavigation(ViewState.AUTH)}
-                        className="text-xs text-purple-400 font-bold px-3 py-1 bg-purple-900/30 rounded-full border border-purple-500/30"
+                        className="text-xs text-purple-400 font-bold px-3 py-1 bg-purple-900/30 rounded-full border border-purple-500/30 ml-2"
                      >
                         {t('app.feed.login')}
                      </button>
                 ) : (
-                    <div className="w-8 h-8 rounded-full overflow-hidden border border-gray-700">
+                    <div className="w-8 h-8 rounded-full overflow-hidden border border-gray-700 ml-2">
                          <img src={user.avatarUrl} alt="Me" className="w-full h-full object-cover" />
                     </div>
                 )}
@@ -452,27 +589,6 @@ const App: React.FC = () => {
                         {filter}
                     </button>
                 ))}
-            </div>
-
-            {/* Feed */}
-            <div className="space-y-6">
-                {displayedSpots.map(spot => (
-                    spot.activeStories.map(story => (
-                        <StoryCard 
-                            key={story.id} 
-                            story={story} 
-                            spot={spot}
-                            currentUser={user}
-                            onDelete={handleDeleteStory}
-                            onClick={() => {}} 
-                            hasLiked={likedStoryIds.has(story.id)}
-                            onToggleLike={() => handleToggleLikeStory(story.id)}
-                        />
-                    ))
-                ))}
-                {displayedSpots.length === 0 && (
-                    <div className="text-center py-20 text-gray-500">
-                        <p>{t('app.feed.noStories')}</p>
                         <button 
                             onClick={() => handleNavigation(ViewState.POST)}
                             className="mt-4 text-purple-400 font-medium"
@@ -487,13 +603,48 @@ const App: React.FC = () => {
     }
   };
 
+  const handleCountryChange = (countryCode: string | null) => {
+    setSelectedCountryCode(countryCode);
+    if (countryCode) {
+      localStorage.setItem('spotlive_country_code', countryCode);
+    } else {
+      localStorage.removeItem('spotlive_country_code');
+    }
+    // Recharger les stories avec le nouveau filtre
+    loadStories();
+  };
+
   return (
     <div className="h-full w-full bg-gray-950 relative max-w-md mx-auto shadow-2xl overflow-hidden flex flex-col">
-        <div className="flex-1 overflow-hidden relative">
-             {renderContent()}
-        </div>
+        <main className="flex-1 overflow-y-auto">
+          <PullToRefresh 
+            onRefresh={handleRefresh}
+            isRefreshing={isRefreshing}
+            pullDownText="Tirez pour rafraîchir"
+            releaseText="Relâchez pour actualiser"
+            refreshingText="Mise à jour..."
+          >
+            {renderContent()}
+          </PullToRefresh>
+        </main>
         {currentView !== ViewState.POST && currentView !== ViewState.AUTH && (
             <Navbar currentView={currentView} onChangeView={handleNavigation} />
+        )}
+        {showCountrySelector && (
+          <CountrySelector
+            currentCountryCode={selectedCountryCode}
+            userCountryCode={userCountryCode}
+            onCountryChange={handleCountryChange}
+            onClose={() => setShowCountrySelector(false)}
+          />
+        )}
+        {reportingStoryId && user && (
+          <ReportModal
+            storyId={reportingStoryId}
+            userId={user.id}
+            onClose={() => setReportingStoryId(null)}
+            onReportSuccess={handleReportSuccess}
+          />
         )}
     </div>
   );

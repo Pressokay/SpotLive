@@ -196,6 +196,7 @@ const ProfileView: React.FC<ProfileViewProps> = ({
                                 onClick={() => {}}
                                 hasLiked={likedStoryIds.has(story.id)}
                                 onToggleLike={() => onToggleLikeStory(story.id)}
+                                onReport={undefined} // Pas de signalement pour ses propres stories
                             />
                         ))
                     )}

@@ -29,7 +29,11 @@ import {
   Globe,
   Grid,
   Search,
-  Bookmark
+  Bookmark,
+  ChevronDown,
+  FlipHorizontal,
+  Flag,
+  AlertTriangle
 } from 'lucide-react';
 
 export { 
@@ -63,5 +67,9 @@ export {
   Globe,
   Grid,
   Search,
-  Bookmark
+  Bookmark,
+  ChevronDown,
+  FlipHorizontal,
+  Flag,
+  AlertTriangle
 };
