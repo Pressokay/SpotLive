@@ -199,35 +199,43 @@ const App: React.FC = () => {
   useEffect(() => {
     let refreshTimeout: NodeJS.Timeout | null = null;
     
-    const subscription = supabase
-      .from('stories')
-      .on('*', (payload) => {
-        console.log('Change received!', payload);
-        // Debounce: rafraîchir seulement si la dernière mise à jour date de plus de 5 secondes
-        const now = new Date();
-        const timeSinceLastRefresh = (now.getTime() - lastRefreshTime.current.getTime()) / 1000;
-        
-        if (timeSinceLastRefresh > 5) {
-          // Annuler le timeout précédent si existe
-          if (refreshTimeout) {
-            clearTimeout(refreshTimeout);
-          }
+    const channel = supabase
+      .channel('stories-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'stories'
+        },
+        (payload) => {
+          console.log('Change received!', payload);
+          // Debounce: rafraîchir seulement si la dernière mise à jour date de plus de 5 secondes
+          const now = new Date();
+          const timeSinceLastRefresh = (now.getTime() - lastRefreshTime.current.getTime()) / 1000;
           
-          // Attendre 1 seconde avant de rafraîchir (debounce)
-          refreshTimeout = setTimeout(() => {
-            if (!isRefreshing) {
-              loadStories();
+          if (timeSinceLastRefresh > 5) {
+            // Annuler le timeout précédent si existe
+            if (refreshTimeout) {
+              clearTimeout(refreshTimeout);
             }
-          }, 1000);
+            
+            // Attendre 1 seconde avant de rafraîchir (debounce)
+            refreshTimeout = setTimeout(() => {
+              if (!isRefreshing) {
+                loadStories();
+              }
+            }, 1000);
+          }
         }
-      })
+      )
       .subscribe();
 
     return () => {
       if (refreshTimeout) {
         clearTimeout(refreshTimeout);
       }
-      supabase.removeSubscription(subscription);
+      supabase.removeChannel(channel);
     };
   }, [loadStories, isRefreshing]); 
 
