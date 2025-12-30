@@ -16,6 +16,9 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
   const [capturedMedia, setCapturedMedia] = useState<string | null>(null); 
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [previewDuration, setPreviewDuration] = useState(0);
+  const [previewCurrentTime, setPreviewCurrentTime] = useState(0);
+  const [isPreviewPlaying, setIsPreviewPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment'); // 'user' = front, 'environment' = back
   const [isSwitchingCamera, setIsSwitchingCamera] = useState(false);
@@ -29,6 +32,7 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
   const [permissionError, setPermissionError] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const previewVideoRef = useRef<HTMLVideoElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const recordingStartMsRef = useRef<number | null>(null);
@@ -63,6 +67,83 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
       window.clearInterval(id);
     };
   }, [isRecording]);
+
+  // Keep preview controls in sync with the recorded <video> element.
+  // Native controls are often obscured by our bottom panel on mobile, so we provide
+  // explicit play/pause + scrub UI.
+  useEffect(() => {
+    if (mode !== 'VIDEO' || !capturedMedia) {
+      setPreviewDuration(0);
+      setPreviewCurrentTime(0);
+      setIsPreviewPlaying(false);
+      return;
+    }
+
+    const el = previewVideoRef.current;
+    if (!el) return;
+
+    const handleLoaded = () => {
+      const duration = Number.isFinite(el.duration) ? el.duration : 0;
+      setPreviewDuration(duration);
+      setPreviewCurrentTime(el.currentTime || 0);
+    };
+
+    const handleTimeUpdate = () => {
+      setPreviewCurrentTime(el.currentTime || 0);
+    };
+
+    const handlePlay = () => setIsPreviewPlaying(true);
+    const handlePause = () => setIsPreviewPlaying(false);
+    const handleEnded = () => setIsPreviewPlaying(false);
+
+    el.addEventListener('loadedmetadata', handleLoaded);
+    el.addEventListener('timeupdate', handleTimeUpdate);
+    el.addEventListener('play', handlePlay);
+    el.addEventListener('pause', handlePause);
+    el.addEventListener('ended', handleEnded);
+
+    // Ensure we're at the start of the preview when opening it.
+    try {
+      el.currentTime = 0;
+    } catch {
+      // Ignore if the browser disallows setting currentTime before metadata.
+    }
+
+    return () => {
+      el.removeEventListener('loadedmetadata', handleLoaded);
+      el.removeEventListener('timeupdate', handleTimeUpdate);
+      el.removeEventListener('play', handlePlay);
+      el.removeEventListener('pause', handlePause);
+      el.removeEventListener('ended', handleEnded);
+    };
+  }, [mode, capturedMedia]);
+
+  const togglePreviewPlayback = async () => {
+    const el = previewVideoRef.current;
+    if (!el) return;
+
+    // On mobile, audio playback is generally allowed only after a user gesture.
+    // This handler runs on a button press, which satisfies autoplay policies.
+    try {
+      if (el.paused) {
+        await el.play();
+      } else {
+        el.pause();
+      }
+    } catch (e) {
+      console.warn('Preview play blocked:', e);
+    }
+  };
+
+  const seekPreviewTo = (nextTimeSeconds: number) => {
+    const el = previewVideoRef.current;
+    if (!el) return;
+    try {
+      el.currentTime = nextTimeSeconds;
+    } catch {
+      // Some browsers can temporarily block seeking until metadata is available.
+    }
+  };
 
   // 1. Initialize Location
   useEffect(() => {
@@ -360,23 +441,56 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
           mode === 'PHOTO' ? (
             <img src={capturedMedia} alt="Captured" className="absolute inset-0 w-full h-full object-cover" />
           ) : (
-            <video 
-              key={capturedMedia}
-              src={capturedMedia} 
-              autoPlay 
-              playsInline 
-              // Mandatory preview screen for video (same flow as photo):
-              // user must accept (share) or discard (retake) before posting.
-              controls
-              muted
-              preload="metadata"
-              onLoadedMetadata={(e) => {
-                // Some mobile browsers require an explicit play() after metadata loads.
-                // If autoplay is blocked, the user can still play via controls.
-                void (e.currentTarget.play?.());
-              }}
-              className="absolute inset-0 w-full h-full object-cover" 
-            />
+            <>
+              <video 
+                key={capturedMedia}
+                ref={previewVideoRef}
+                src={capturedMedia} 
+                playsInline 
+                preload="metadata"
+                // IMPORTANT:
+                // - Do not force autoplay with sound on mobile (often blocked).
+                // - Do not set muted=true, otherwise preview will have no sound.
+                // Playback is triggered via explicit user interaction (Play button).
+                className="absolute inset-0 w-full h-full object-cover" 
+              />
+
+              {/* Custom preview controls: native controls are often hidden by the bottom panel on mobile */}
+              <div className="absolute left-4 right-4 bottom-28 z-30">
+                <div className="bg-black/50 backdrop-blur-md rounded-2xl border border-white/10 p-3">
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void togglePreviewPlayback();
+                      }}
+                      className="w-12 h-12 rounded-full bg-white/10 hover:bg-white/20 text-white font-bold flex items-center justify-center"
+                      aria-label={isPreviewPlaying ? 'Pause' : 'Play'}
+                    >
+                      {isPreviewPlaying ? '❚❚' : '▶'}
+                    </button>
+
+                    <div className="flex-1">
+                      <input
+                        type="range"
+                        min={0}
+                        max={Math.max(0, previewDuration)}
+                        step={0.05}
+                        value={Math.min(previewCurrentTime, previewDuration || 0)}
+                        onChange={(e) => {
+                          seekPreviewTo(Number(e.target.value));
+                        }}
+                        className="w-full"
+                      />
+                      <div className="flex justify-between text-[10px] text-gray-200 mt-1 tabular-nums">
+                        <span>{formatRecordingTime(Math.floor(previewCurrentTime))}</span>
+                        <span>{formatRecordingTime(Math.floor(previewDuration))}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </>
           )
         )}
       </div>
