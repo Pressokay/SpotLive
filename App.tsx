@@ -253,19 +253,68 @@ const App: React.FC = () => {
   }, []);
 
   // Calculer displayedSpots pour MapView
-  const displayedSpots = useMemo(() => {
-    return activeStories.map(story => ({
-      id: story.id,
-      latitude: story.latitude,
-      longitude: story.longitude,
-      locationName: story.locationName,
-      username: story.username,
-      userAvatar: story.userAvatar,
-      imageUrl: story.imageUrl,
-      vibeTags: story.vibeTags,
-      timestamp: story.timestamp
-    }));
-  }, [activeStories]);
+  const { displayedSpots, spotByStoryId } = useMemo(() => {
+    const byKey = new Map<
+      string,
+      {
+        key: string;
+        stories: Story[];
+        latSum: number;
+        lonSum: number;
+        locationName: string;
+      }
+    >();
+
+    for (const story of activeStories) {
+      const latKey = Math.round(story.latitude * 1000) / 1000;
+      const lonKey = Math.round(story.longitude * 1000) / 1000;
+      const key = `${story.locationName}|${latKey}|${lonKey}`;
+
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.stories.push(story);
+        existing.latSum += story.latitude;
+        existing.lonSum += story.longitude;
+      } else {
+        byKey.set(key, {
+          key,
+          stories: [story],
+          latSum: story.latitude,
+          lonSum: story.longitude,
+          locationName: story.locationName
+        });
+      }
+    }
+
+    const spots: Spot[] = [];
+    const storyToSpot: Record<string, Spot> = {};
+
+    for (const group of byKey.values()) {
+      const latitude = group.latSum / group.stories.length;
+      const longitude = group.lonSum / group.stories.length;
+      const neighborhood = getNeighborhoodName(latitude, longitude, cityName);
+      const totalLikes = group.stories.reduce((sum, s) => sum + (s.likes || 0), 0);
+      const vibeScore = group.stories.length * 20 + totalLikes * 2;
+
+      const spot: Spot = {
+        id: `spot_${group.key}`,
+        name: group.locationName,
+        neighborhood,
+        latitude,
+        longitude,
+        description: '',
+        activeStories: group.stories,
+        vibeScore
+      };
+
+      spots.push(spot);
+      for (const story of group.stories) {
+        storyToSpot[story.id] = spot;
+      }
+    }
+
+    return { displayedSpots: spots, spotByStoryId: storyToSpot };
+  }, [activeStories, cityName]);
 
   const handleSpotSelectFromMap = (spot: Spot) => {
     setCurrentView(ViewState.FEED);
@@ -534,9 +583,13 @@ const App: React.FC = () => {
                 onLogout={handleLogout} 
                 onUpdateProfile={handleUpdateProfile}
                 myStories={myStories}
-                onDeleteStory={handleDeleteStory}
+                onDeleteStory={(id) => {
+                  void handleDeleteStory(id);
+                }}
                 likedStoryIds={likedStoryIds}
-                onToggleLikeStory={handleToggleLikeStory}
+                onToggleLikeStory={(storyId) => {
+                  void handleToggleLikeStory(storyId);
+                }}
             />
         );
 
@@ -627,10 +680,16 @@ const App: React.FC = () => {
                         <StoryCard 
                             key={story.id} 
                             story={story}
-                            currentUserId={user?.id}
-                            isLiked={likedStoryIds.has(story.id)}
-                            onToggleLike={handleToggleLikeStory}
-                            onDelete={handleDeleteStory}
+                            spot={spotByStoryId[story.id]}
+                            currentUser={user}
+                            onClick={() => {}}
+                            onDelete={(id) => {
+                              void handleDeleteStory(id);
+                            }}
+                            hasLiked={likedStoryIds.has(story.id)}
+                            onToggleLike={() => {
+                              void handleToggleLikeStory(story.id);
+                            }}
                             onReport={handleReportStory}
                         />
                     ))
@@ -664,16 +723,21 @@ const App: React.FC = () => {
 
   return (
     <div className="h-full w-full bg-gray-950 relative max-w-md mx-auto shadow-2xl overflow-hidden flex flex-col">
-        <main className="flex-1 overflow-y-auto">
-          <PullToRefresh 
-            onRefresh={handleRefresh}
-            isRefreshing={isRefreshing}
-            pullDownText="Tirez pour rafraîchir"
-            releaseText="Relâchez pour actualiser"
-            refreshingText="Mise à jour..."
-          >
-            {renderContent()}
-          </PullToRefresh>
+        <main className="flex-1 overflow-hidden">
+          {currentView === ViewState.FEED ? (
+            <PullToRefresh 
+              className="h-full"
+              onRefresh={handleRefresh}
+              isRefreshing={isRefreshing}
+              pullDownText="Tirez pour rafraîchir"
+              releaseText="Relâchez pour actualiser"
+              refreshingText="Mise à jour..."
+            >
+              {renderContent()}
+            </PullToRefresh>
+          ) : (
+            renderContent()
+          )}
         </main>
         {currentView !== ViewState.POST && currentView !== ViewState.AUTH && (
             <Navbar currentView={currentView} onChangeView={handleNavigation} />
