@@ -15,6 +15,7 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [capturedMedia, setCapturedMedia] = useState<string | null>(null); 
   const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [loading, setLoading] = useState(false);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment'); // 'user' = front, 'environment' = back
   const [isSwitchingCamera, setIsSwitchingCamera] = useState(false);
@@ -30,6 +31,38 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const recordingStartMsRef = useRef<number | null>(null);
+
+  const isFrontCamera = facingMode === 'user';
+
+  const formatRecordingTime = (totalSeconds: number) => {
+    const mm = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+    const ss = String(totalSeconds % 60).padStart(2, '0');
+    return `${mm}:${ss}`;
+  };
+
+  // While recording, show user feedback (REC + timer). This is a UX requirement and
+  // does not affect the recorded output.
+  useEffect(() => {
+    if (!isRecording) {
+      recordingStartMsRef.current = null;
+      setRecordingSeconds(0);
+      return;
+    }
+
+    recordingStartMsRef.current = Date.now();
+    setRecordingSeconds(0);
+
+    const id = window.setInterval(() => {
+      if (!recordingStartMsRef.current) return;
+      const elapsed = Math.floor((Date.now() - recordingStartMsRef.current) / 1000);
+      setRecordingSeconds(elapsed);
+    }, 250);
+
+    return () => {
+      window.clearInterval(id);
+    };
+  }, [isRecording]);
 
   // 1. Initialize Location
   useEffect(() => {
@@ -159,6 +192,8 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
       canvas.height = videoRef.current.videoHeight;
       const ctx = canvas.getContext('2d');
       if (ctx) {
+        // IMPORTANT: We mirror ONLY the preview for the front camera (selfie UX).
+        // The captured photo must NOT be mirrored in the final output.
         ctx.drawImage(videoRef.current, 0, 0);
         const base64 = canvas.toDataURL('image/jpeg', 0.8);
         setCapturedMedia(base64);
@@ -291,13 +326,28 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
 
       <div className="flex-1 relative bg-gray-900">
         {!capturedMedia ? (
-          <video 
-            ref={videoRef}
-            autoPlay 
-            playsInline 
-            muted 
-            className="absolute inset-0 w-full h-full object-cover"
-          />
+          <>
+            <video 
+              ref={videoRef}
+              autoPlay 
+              playsInline 
+              muted 
+              // Mirror ONLY the live preview for front camera (selfie UX).
+              // Do NOT mirror the captured media.
+              style={{ transform: isFrontCamera ? 'scaleX(-1)' : undefined, transformOrigin: 'center' }}
+              className="absolute inset-0 w-full h-full object-cover"
+            />
+
+            {mode === 'VIDEO' && isRecording && (
+              <div className="absolute top-4 left-4 z-30 pointer-events-none">
+                <div className="flex items-center space-x-2 bg-black/50 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/10">
+                  <span className="w-2.5 h-2.5 rounded-full bg-red-500" />
+                  <span className="text-xs font-black tracking-widest text-white">REC</span>
+                  <span className="text-xs font-bold text-white tabular-nums">{formatRecordingTime(recordingSeconds)}</span>
+                </div>
+              </div>
+            )}
+          </>
         ) : (
           mode === 'PHOTO' ? (
             <img src={capturedMedia} alt="Captured" className="absolute inset-0 w-full h-full object-cover" />
@@ -306,7 +356,9 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
               src={capturedMedia} 
               autoPlay 
               playsInline 
-              loop 
+              // Mandatory preview screen for video (same flow as photo):
+              // user must accept (share) or discard (retake) before posting.
+              controls
               className="absolute inset-0 w-full h-full object-cover" 
             />
           )
