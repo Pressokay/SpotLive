@@ -456,7 +456,7 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
               />
 
               {/* Custom preview controls: native controls are often hidden by the bottom panel on mobile */}
-              <div className="absolute left-4 right-4 bottom-28 z-30">
+              <div className="absolute left-4 right-4 top-20 z-30">
                 <div className="bg-black/50 backdrop-blur-md rounded-2xl border border-white/10 p-3">
                   <div className="flex items-center gap-3">
                     <button
