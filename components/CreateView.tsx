@@ -210,7 +210,15 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
       };
 
       recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+        // On mobile (especially iOS), forcing an incorrect mimeType (e.g. video/webm)
+        // can result in a black preview even though recording succeeded.
+        // Use the real recorder/chunk mimeType so the <video> element can decode it.
+        const mimeType =
+          recorder.mimeType ||
+          chunksRef.current[0]?.type ||
+          'video/webm';
+
+        const blob = new Blob(chunksRef.current, { type: mimeType });
         const url = URL.createObjectURL(blob);
         setCapturedMedia(url);
         setIsRecording(false);
@@ -353,12 +361,20 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
             <img src={capturedMedia} alt="Captured" className="absolute inset-0 w-full h-full object-cover" />
           ) : (
             <video 
+              key={capturedMedia}
               src={capturedMedia} 
               autoPlay 
               playsInline 
               // Mandatory preview screen for video (same flow as photo):
               // user must accept (share) or discard (retake) before posting.
               controls
+              muted
+              preload="metadata"
+              onLoadedMetadata={(e) => {
+                // Some mobile browsers require an explicit play() after metadata loads.
+                // If autoplay is blocked, the user can still play via controls.
+                void (e.currentTarget.play?.());
+              }}
               className="absolute inset-0 w-full h-full object-cover" 
             />
           )
