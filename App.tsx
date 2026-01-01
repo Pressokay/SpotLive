@@ -10,7 +10,7 @@ import AuthView from './components/AuthView';
 import ProfileView from './components/ProfileView';
 import CountrySelector from './components/CountrySelector';
 import ReportModal from './components/ReportModal';
-import { MapPin, RefreshCw } from './components/Icon';
+import { MapPin } from './components/Icon';
 import { useLanguage } from './translations';
 import { storiesService, usersService, supabase } from './services/supabaseService';
 import { detectCountryFromCoordinates, getCountryName, getCountryFlag } from './services/countryService';
@@ -322,6 +322,12 @@ const App: React.FC = () => {
   };
 
   const handleNavigation = (view: ViewState) => {
+    // Instagram-style: If re-tapping the feed tab, refresh the feed
+    if (view === ViewState.FEED && currentView === ViewState.FEED) {
+      handleRefresh();
+      return;
+    }
+
     if ((view === ViewState.POST || view === ViewState.PROFILE) && !user) {
         setPendingView(view);
         setCurrentView(ViewState.AUTH);
@@ -363,12 +369,17 @@ const App: React.FC = () => {
       console.warn('Could not detect country for story:', error);
     }
 
+    // CRITICAL FIX: For videos, set videoUrl and use a placeholder/thumbnail for imageUrl
+    // For photos, use media as imageUrl directly, videoUrl is undefined
     const newStory: Story = {
       id: `story_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       userId: user.id,
       username: user.username,
       userAvatar: user.avatarUrl,
-      imageUrl: data.media, 
+      // CRITICAL: Set videoUrl for videos (contains base64 data URL)
+      // imageUrl serves as a fallback/thumbnail for videos, or the actual image for photos
+      imageUrl: data.media, // Can be improved with actual thumbnail generation for videos
+      videoUrl: data.isVideo ? data.media : undefined, // CRITICAL: Set videoUrl for videos
       timestamp: Date.now(),
       caption: data.caption || 'Just vibing',
       vibeTags: data.hashtags.length > 0 ? data.hashtags : ['#SpotLive'],
@@ -623,22 +634,6 @@ const App: React.FC = () => {
                             <span className="text-xs text-gray-300">
                                 {selectedCountryCode ? getCountryName(selectedCountryCode) : 'Tous'}
                             </span>
-                        </button>
-                        {/* Refresh Button */}
-                        <button
-                            onClick={handleRefresh}
-                            disabled={isRefreshing}
-                            className={`p-1.5 rounded-full transition-all ${
-                                isRefreshing
-                                    ? 'bg-purple-600 text-white cursor-wait'
-                                    : 'bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white'
-                            }`}
-                            title="Rafraîchir"
-                        >
-                            <RefreshCw 
-                                size={14} 
-                                className={isRefreshing ? 'animate-spin' : ''}
-                            />
                         </button>
                     </div>
                 </div>

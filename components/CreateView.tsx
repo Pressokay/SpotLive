@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Camera, X, Loader2, Repeat, Check, MapPin, Zap, FlipHorizontal } from './Icon';
 import { useLanguage } from '../translations';
+import { mediaService } from '../services/supabaseService';
 
 interface CreateViewProps {
   onClose: () => void;
@@ -30,12 +31,14 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
   const [caption, setCaption] = useState('');
   const [hashtags, setHashtags] = useState('');
   const [permissionError, setPermissionError] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const previewVideoRef = useRef<HTMLVideoElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const recordingStartMsRef = useRef<number | null>(null);
+  const videoBlobRef = useRef<Blob | null>(null); // Store the original video blob for upload
 
   const isFrontCamera = facingMode === 'user';
 
@@ -300,6 +303,8 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
           'video/webm';
 
         const blob = new Blob(chunksRef.current, { type: mimeType });
+        // Store the original blob for later upload/conversion to base64
+        videoBlobRef.current = blob;
         const url = URL.createObjectURL(blob);
         setCapturedMedia(url);
         setIsRecording(false);
@@ -331,6 +336,8 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
     setStream(null); 
     setCaption('');
     setHashtags('');
+    videoBlobRef.current = null; // Clear stored blob
+    setUploadError(null); // Clear any upload errors
   };
 
   // Basculer entre caméra avant et arrière
@@ -351,21 +358,54 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
     // Le useEffect se chargera de démarrer la nouvelle caméra
   };
 
-  const handlePublish = () => {
+  const handlePublish = async () => {
     if (!capturedMedia) return;
+    
     setLoading(true);
-    setTimeout(() => {
+    setUploadError(null);
+    
+    try {
+      let mediaUrl = capturedMedia;
+      
+      // CRITICAL FIX: For videos, convert blob URL to base64 data URL
+      // Blob URLs are temporary and break after page refresh
+      // Base64 data URLs persist and work across sessions
+      if (mode === 'VIDEO' && videoBlobRef.current) {
+        try {
+          // Convert video blob to base64 data URL for persistence
+          mediaUrl = await mediaService.blobToDataURL(videoBlobRef.current);
+          
+          if (!mediaUrl) {
+            throw new Error('Failed to convert video to data URL');
+          }
+        } catch (error) {
+          console.error('Error converting video:', error);
+          setUploadError('Failed to process video. Please try again.');
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Call onPostSuccess with the processed media URL
       onPostSuccess({
         locationName,
         caption,
         hashtags: hashtags.split(' ').filter(tag => tag.startsWith('#')),
-        media: capturedMedia,
+        media: mediaUrl,
         isVideo: mode === 'VIDEO',
         lat: currentLat || 0,
         lng: currentLng || 0
       });
+      
+      // Cleanup: revoke blob URL if it was a video
+      if (mode === 'VIDEO' && capturedMedia.startsWith('blob:')) {
+        URL.revokeObjectURL(capturedMedia);
+      }
+    } catch (error) {
+      console.error('Error publishing:', error);
+      setUploadError('Failed to upload. Please try again.');
       setLoading(false);
-    }, 1500);
+    }
   };
 
   if (permissionError) {
@@ -535,6 +575,13 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
         ) : (
           <div className="bg-black/80 backdrop-blur-xl border-t border-white/10 p-6 rounded-t-3xl animate-in slide-in-from-bottom-full duration-300">
             <div className="space-y-4 mb-6">
+                {/* Error Message Display */}
+                {uploadError && (
+                  <div className="bg-red-900/50 border border-red-500/50 rounded-xl p-3 text-red-200 text-sm">
+                    {uploadError}
+                  </div>
+                )}
+
                 <div className="flex items-center space-x-3 bg-gray-800 rounded-xl p-3 border border-gray-700 focus-within:border-purple-500 transition-colors">
                     <MapPin size={18} className="text-purple-400 shrink-0" />
                     <input 

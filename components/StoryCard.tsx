@@ -80,16 +80,56 @@ const StoryCard: React.FC<StoryCardProps> = ({
     }
   };
 
+  // CRITICAL FIX: Render video element when videoUrl exists, otherwise render image
+  const renderMedia = () => {
+    if (story.videoUrl) {
+      // Video story: render video element with proper attributes for mobile playback
+      return (
+        <video
+          src={story.videoUrl}
+          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+          playsInline
+          muted
+          loop
+          autoPlay
+          preload="metadata"
+          // Fallback to image if video fails to load
+          onError={(e) => {
+            console.error('Video failed to load:', story.videoUrl);
+            // If video fails, try to show image as fallback
+            const img = document.createElement('img');
+            img.src = story.imageUrl;
+            img.className = 'w-full h-full object-cover';
+            if (e.currentTarget.parentElement) {
+              e.currentTarget.parentElement.appendChild(img);
+              e.currentTarget.style.display = 'none';
+            }
+          }}
+        />
+      );
+    } else {
+      // Photo story: render image element
+      return (
+        <img 
+          src={story.imageUrl} 
+          alt={story.caption} 
+          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+          onError={(e) => {
+            console.error('Image failed to load:', story.imageUrl);
+            // Show error placeholder
+            e.currentTarget.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="400" height="400"%3E%3Crect fill="%23374151" width="400" height="400"/%3E%3Ctext fill="%239ca3af" font-family="sans-serif" font-size="18" x="50%25" y="50%25" text-anchor="middle" dy=".3em"%3EFailed to load%3C/text%3E%3C/svg%3E';
+          }}
+        />
+      );
+    }
+  };
+
   return (
     <div 
       className="relative w-full aspect-[4/5] bg-gray-800 rounded-xl overflow-hidden shadow-lg mb-4 cursor-pointer group"
       onClick={onClick}
     >
-      <img 
-        src={story.imageUrl} 
-        alt={story.caption} 
-        className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
-      />
+      {renderMedia()}
       <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/30" />
       
       {/* Header */}

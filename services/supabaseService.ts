@@ -438,3 +438,89 @@ export const moderationService = {
   }
 };
 
+// Service pour l'upload de fichiers média
+export const mediaService = {
+  /**
+   * Convertit un Blob en base64 data URL
+   * Cette approche fonctionne immédiatement mais a des limitations de taille
+   * Pour la production, migrez vers Supabase Storage
+   */
+  async blobToDataURL(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        if (typeof reader.result === 'string') {
+          resolve(reader.result);
+        } else {
+          reject(new Error('Failed to convert blob to data URL'));
+        }
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  },
+
+  /**
+   * Upload une vidéo vers Supabase Storage
+   * TODO: Configurez un bucket 'stories' dans Supabase Storage pour utiliser cette fonction
+   */
+  async uploadVideo(blob: Blob, storyId: string): Promise<string | null> {
+    try {
+      // Pour l'instant, convertissons en base64 data URL
+      // En production, utilisez Supabase Storage:
+      // const fileExt = blob.type.split('/')[1] || 'webm';
+      // const fileName = `${storyId}.${fileExt}`;
+      // const { data, error } = await supabase.storage
+      //   .from('stories')
+      //   .upload(fileName, blob, { contentType: blob.type });
+      // if (error) throw error;
+      // const { data: { publicUrl } } = supabase.storage.from('stories').getPublicUrl(fileName);
+      // return publicUrl;
+      
+      return await this.blobToDataURL(blob);
+    } catch (error) {
+      console.error('Error uploading video:', error);
+      return null;
+    }
+  },
+
+  /**
+   * Crée une thumbnail à partir d'une vidéo
+   */
+  async createVideoThumbnail(videoBlob: Blob): Promise<string | null> {
+    try {
+      const videoUrl = URL.createObjectURL(videoBlob);
+      const video = document.createElement('video');
+      video.src = videoUrl;
+      video.currentTime = 0.5; // Prendre une frame après 0.5 secondes
+      
+      return new Promise((resolve) => {
+        video.addEventListener('loadeddata', async () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          const ctx = canvas.getContext('2d');
+          
+          if (ctx) {
+            ctx.drawImage(video, 0, 0);
+            const thumbnailDataUrl = canvas.toDataURL('image/jpeg', 0.8);
+            URL.revokeObjectURL(videoUrl);
+            resolve(thumbnailDataUrl);
+          } else {
+            URL.revokeObjectURL(videoUrl);
+            resolve(null);
+          }
+        });
+        
+        video.addEventListener('error', () => {
+          URL.revokeObjectURL(videoUrl);
+          resolve(null);
+        });
+      });
+    } catch (error) {
+      console.error('Error creating video thumbnail:', error);
+      return null;
+    }
+  },
+};
+
