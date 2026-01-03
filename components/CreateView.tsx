@@ -39,6 +39,8 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
   const chunksRef = useRef<Blob[]>([]);
   const recordingStartMsRef = useRef<number | null>(null);
   const videoBlobRef = useRef<Blob | null>(null); // Store the original video blob for upload
+  const canvasRef = useRef<HTMLCanvasElement | null>(null); // Canvas for processing front camera video
+  const animationFrameRef = useRef<number | null>(null); // Track animation frame for canvas recording
 
   const isFrontCamera = facingMode === 'user';
 
@@ -284,51 +286,148 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
         if (stream) stream.getTracks().forEach(track => track.stop());
       }
     } else {
-      if (!stream) return;
+      // VIDEO MODE
+      if (!stream || !videoRef.current) return;
+      
       setIsRecording(true);
       chunksRef.current = [];
-      const recorder = new MediaRecorder(stream);
       
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
+      // CRITICAL FIX: For front camera, we need to un-mirror the video during recording
+      // The front camera stream is mirrored by hardware/browser, and we mirror the preview with CSS.
+      // But the recorded video must NOT be mirrored (Instagram/Snapchat style).
+      // Solution: Use Canvas Capture Stream to process frames and flip them.
+      
+      if (isFrontCamera) {
+        // Front camera: Record through canvas to un-mirror the video
+        const video = videoRef.current;
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        
+        if (!ctx) {
+          console.error('Canvas context not available');
+          setIsRecording(false);
+          return;
+        }
+        
+        // Create canvas stream for recording (un-mirrored)
+        const canvasStream = canvas.captureStream(30); // 30 fps
+        const recorder = new MediaRecorder(canvasStream, {
+          mimeType: 'video/webm;codecs=vp8,opus'
+        });
+        
+        // Animation loop to draw frames from video to canvas (un-mirrored)
+        // The front camera stream is mirrored by hardware/browser, so we flip it here
+        let isRecordingActive = true;
+        const drawFrame = () => {
+          if (!isRecordingActive || !video || !ctx) return;
+          
+          // Save context state
+          ctx.save();
+          // Flip horizontally: translate to right edge, then scale X by -1
+          ctx.translate(canvas.width, 0);
+          ctx.scale(-1, 1);
+          // Draw the video frame (the scaleX(-1) un-mirrors the mirrored stream)
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          // Restore context
+          ctx.restore();
+          
+          animationFrameRef.current = requestAnimationFrame(drawFrame);
+        };
+        
+        // Store cleanup function
+        const cleanup = () => {
+          isRecordingActive = false;
+          if (animationFrameRef.current) {
+            cancelAnimationFrame(animationFrameRef.current);
+            animationFrameRef.current = null;
+          }
+        };
+        
+        // Start drawing frames
+        animationFrameRef.current = requestAnimationFrame(drawFrame);
+        canvasRef.current = canvas;
+        
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0) chunksRef.current.push(e.data);
+        };
+        
+        recorder.onstop = () => {
+          // Stop animation frame loop
+          cleanup();
+          canvasRef.current = null;
+          
+          const mimeType =
+            recorder.mimeType ||
+            chunksRef.current[0]?.type ||
+            'video/webm';
+          
+          const blob = new Blob(chunksRef.current, { type: mimeType });
+          videoBlobRef.current = blob;
+          const url = URL.createObjectURL(blob);
+          setCapturedMedia(url);
+          setIsRecording(false);
+          if (stream) stream.getTracks().forEach(track => track.stop());
+        };
+        
+        recorder.start();
+        mediaRecorderRef.current = recorder;
+      } else {
+        // Back camera: Record directly from stream (no mirroring needed)
+        const recorder = new MediaRecorder(stream);
+        
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0) chunksRef.current.push(e.data);
+        };
+        
+        recorder.onstop = () => {
+          const mimeType =
+            recorder.mimeType ||
+            chunksRef.current[0]?.type ||
+            'video/webm';
+          
+          const blob = new Blob(chunksRef.current, { type: mimeType });
+          videoBlobRef.current = blob;
+          const url = URL.createObjectURL(blob);
+          setCapturedMedia(url);
+          setIsRecording(false);
+          if (stream) stream.getTracks().forEach(track => track.stop());
+        };
+        
+        recorder.start();
+        mediaRecorderRef.current = recorder;
+      }
 
-      recorder.onstop = () => {
-        // On mobile (especially iOS), forcing an incorrect mimeType (e.g. video/webm)
-        // can result in a black preview even though recording succeeded.
-        // Use the real recorder/chunk mimeType so the <video> element can decode it.
-        const mimeType =
-          recorder.mimeType ||
-          chunksRef.current[0]?.type ||
-          'video/webm';
-
-        const blob = new Blob(chunksRef.current, { type: mimeType });
-        // Store the original blob for later upload/conversion to base64
-        videoBlobRef.current = blob;
-        const url = URL.createObjectURL(blob);
-        setCapturedMedia(url);
-        setIsRecording(false);
-        if (stream) stream.getTracks().forEach(track => track.stop());
-      };
-
-      recorder.start();
-      mediaRecorderRef.current = recorder;
-
+      // Auto-stop after 15 seconds
       setTimeout(() => {
-        if (recorder.state === 'recording') {
-          recorder.stop();
+        if (mediaRecorderRef.current?.state === 'recording') {
+          mediaRecorderRef.current.stop();
         }
       }, 15000);
     }
   };
 
   const handleStopRecording = () => {
+    // Stop animation frame loop if recording with front camera
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
     }
   };
 
   const handleRetake = () => {
+    // Cleanup animation frame if exists
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    canvasRef.current = null;
+    
     if (capturedMedia && mode === 'VIDEO') {
       URL.revokeObjectURL(capturedMedia);
     }
