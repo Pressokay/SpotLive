@@ -5,7 +5,18 @@ import { mediaService } from '../services/supabaseService';
 
 interface CreateViewProps {
   onClose: () => void;
-  onPostSuccess: (data: { locationName: string; caption: string; hashtags: string[]; media: string; isVideo: boolean; lat: number; lng: number }) => void;
+  onPostSuccess: (data: {
+    storyId?: string;
+    locationName: string;
+    caption: string;
+    hashtags: string[];
+    media: string;
+    /** Optional thumbnail/poster image for videos (data URL) */
+    thumbnail?: string | null;
+    isVideo: boolean;
+    lat: number;
+    lng: number;
+  }) => void;
 }
 
 type Mode = 'PHOTO' | 'VIDEO';
@@ -278,9 +289,22 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
       canvas.height = videoRef.current.videoHeight;
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        // IMPORTANT: We mirror ONLY the preview for the front camera (selfie UX).
-        // The captured photo must NOT be mirrored in the final output.
-        ctx.drawImage(videoRef.current, 0, 0);
+        // IMPORTANT (Instagram/Snapchat style):
+        // - The LIVE preview is mirrored via CSS for the front camera (selfie UX).
+        // - The FINAL captured photo must NOT be mirrored.
+        //
+        // Some mobile browsers can effectively provide a mirrored front-camera frame.
+        // To guarantee correct output, we explicitly un-mirror the captured image
+        // for the front camera by flipping on the canvas draw step.
+        if (isFrontCamera) {
+          ctx.save();
+          ctx.translate(canvas.width, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(videoRef.current, 0, 0);
+          ctx.restore();
+        } else {
+          ctx.drawImage(videoRef.current, 0, 0);
+        }
         const base64 = canvas.toDataURL('image/jpeg', 0.8);
         setCapturedMedia(base64);
         if (stream) stream.getTracks().forEach(track => track.stop());
@@ -301,8 +325,10 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
         // Front camera: Record through canvas to un-mirror the video
         const video = videoRef.current;
         const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
+        // Ensure non-zero canvas size (otherwise you record black frames).
+        const trackSettings = stream.getVideoTracks()[0]?.getSettings?.() || {};
+        canvas.width = video.videoWidth || (trackSettings.width as number) || 720;
+        canvas.height = video.videoHeight || (trackSettings.height as number) || 1280;
         const ctx = canvas.getContext('2d');
         
         if (!ctx) {
@@ -313,15 +339,39 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
         
         // Create canvas stream for recording (un-mirrored)
         const canvasStream = canvas.captureStream(30); // 30 fps
-        const recorder = new MediaRecorder(canvasStream, {
-          mimeType: 'video/webm;codecs=vp8,opus'
-        });
+        // Preserve audio: canvas.captureStream() is VIDEO-only.
+        const mixedStream = new MediaStream([
+          ...canvasStream.getVideoTracks(),
+          ...stream.getAudioTracks()
+        ]);
+
+        // Pick a MIME type supported by the current browser (Safari often doesn't support WebM).
+        const preferredMimeTypes = [
+          'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
+          'video/mp4',
+          'video/webm;codecs=vp9,opus',
+          'video/webm;codecs=vp8,opus',
+          'video/webm'
+        ];
+        const chosenMimeType =
+          typeof MediaRecorder !== 'undefined' && (MediaRecorder as any).isTypeSupported
+            ? preferredMimeTypes.find((t) => MediaRecorder.isTypeSupported(t))
+            : undefined;
+
+        const recorder = chosenMimeType
+          ? new MediaRecorder(mixedStream, { mimeType: chosenMimeType })
+          : new MediaRecorder(mixedStream);
         
         // Animation loop to draw frames from video to canvas (un-mirrored)
         // The front camera stream is mirrored by hardware/browser, so we flip it here
         let isRecordingActive = true;
         const drawFrame = () => {
           if (!isRecordingActive || !video || !ctx) return;
+          if (video.readyState < 2) {
+            // Wait for a decodable frame
+            animationFrameRef.current = requestAnimationFrame(drawFrame);
+            return;
+          }
           
           // Save context state
           ctx.save();
@@ -361,7 +411,7 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
           const mimeType =
             recorder.mimeType ||
             chunksRef.current[0]?.type ||
-            'video/webm';
+            'video/mp4';
           
           const blob = new Blob(chunksRef.current, { type: mimeType });
           videoBlobRef.current = blob;
@@ -465,21 +515,24 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
     
     try {
       let mediaUrl = capturedMedia;
+      let thumbnail: string | null | undefined = undefined;
+      const storyId = `story_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       
-      // CRITICAL FIX: For videos, convert blob URL to base64 data URL
-      // Blob URLs are temporary and break after page refresh
-      // Base64 data URLs persist and work across sessions
+      // CRITICAL FIX: For videos, DO NOT persist as base64 data URL (often unplayable/too heavy).
+      // Upload to Supabase Storage and store a real URL in the story.
       if (mode === 'VIDEO' && videoBlobRef.current) {
         try {
-          // Convert video blob to base64 data URL for persistence
-          mediaUrl = await mediaService.blobToDataURL(videoBlobRef.current);
-          
-          if (!mediaUrl) {
-            throw new Error('Failed to convert video to data URL');
-          }
+          // Generate a lightweight poster thumbnail (stored as data URL in DB).
+          // This keeps `image_url` non-null and gives a stable poster frame.
+          thumbnail = await mediaService.createVideoThumbnail(videoBlobRef.current);
+
+          // Upload video blob -> Supabase Storage public URL (or null on failure)
+          const uploadedUrl = await mediaService.uploadVideo(videoBlobRef.current, storyId);
+          if (!uploadedUrl) throw new Error('Video upload failed');
+          mediaUrl = uploadedUrl;
         } catch (error) {
           console.error('Error converting video:', error);
-          setUploadError('Failed to process video. Please try again.');
+          setUploadError('Video failed to upload. Please retry.');
           setLoading(false);
           return;
         }
@@ -487,10 +540,12 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
       
       // Call onPostSuccess with the processed media URL
       onPostSuccess({
+        storyId,
         locationName,
         caption,
         hashtags: hashtags.split(' ').filter(tag => tag.startsWith('#')),
         media: mediaUrl,
+        thumbnail,
         isVideo: mode === 'VIDEO',
         lat: currentLat || 0,
         lng: currentLng || 0

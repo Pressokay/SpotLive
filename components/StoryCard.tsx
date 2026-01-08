@@ -24,6 +24,7 @@ const StoryCard: React.FC<StoryCardProps> = ({
   onReport
 }) => {
   const [copied, setCopied] = useState(false);
+  const [videoFailed, setVideoFailed] = useState(false);
 
   const timeAgo = (timestamp: number) => {
     const diff = Date.now() - timestamp;
@@ -82,28 +83,22 @@ const StoryCard: React.FC<StoryCardProps> = ({
 
   // CRITICAL FIX: Render video element when videoUrl exists, otherwise render image
   const renderMedia = () => {
-    if (story.videoUrl) {
+    if (story.videoUrl && !videoFailed) {
       // Video story: render video element with proper attributes for mobile playback
       return (
         <video
           src={story.videoUrl}
+          poster={story.imageUrl}
           className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
           playsInline
           muted
           loop
           autoPlay
           preload="metadata"
-          // Fallback to image if video fails to load
-          onError={(e) => {
+          // If video fails, fall back to poster image with a clear error state.
+          onError={() => {
             console.error('Video failed to load:', story.videoUrl);
-            // If video fails, try to show image as fallback
-            const img = document.createElement('img');
-            img.src = story.imageUrl;
-            img.className = 'w-full h-full object-cover';
-            if (e.currentTarget.parentElement) {
-              e.currentTarget.parentElement.appendChild(img);
-              e.currentTarget.style.display = 'none';
-            }
+            setVideoFailed(true);
           }}
         />
       );

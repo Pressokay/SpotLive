@@ -462,22 +462,31 @@ export const mediaService = {
 
   /**
    * Upload une vidéo vers Supabase Storage
-   * TODO: Configurez un bucket 'stories' dans Supabase Storage pour utiliser cette fonction
+   *
+   * IMPORTANT:
+   * - Les vidéos en base64 data URLs sont souvent non lisibles / trop lourdes sur mobile.
+   * - Pour un affichage fiable en feed, on doit stocker la vidéo dans Supabase Storage
+   *   et sauvegarder une URL (publique ou signée) dans `stories.video_url`.
    */
   async uploadVideo(blob: Blob, storyId: string): Promise<string | null> {
     try {
-      // Pour l'instant, convertissons en base64 data URL
-      // En production, utilisez Supabase Storage:
-      // const fileExt = blob.type.split('/')[1] || 'webm';
-      // const fileName = `${storyId}.${fileExt}`;
-      // const { data, error } = await supabase.storage
-      //   .from('stories')
-      //   .upload(fileName, blob, { contentType: blob.type });
-      // if (error) throw error;
-      // const { data: { publicUrl } } = supabase.storage.from('stories').getPublicUrl(fileName);
-      // return publicUrl;
-      
-      return await this.blobToDataURL(blob);
+      const bucket = 'stories';
+      const contentType = blob.type || 'video/mp4';
+      const extFromType = contentType.includes('/') ? contentType.split('/')[1] : 'mp4';
+      const fileExt = (extFromType || 'mp4').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'mp4';
+      const filePath = `videos/${storyId}.${fileExt}`;
+
+      const { error } = await supabase.storage
+        .from(bucket)
+        .upload(filePath, blob, { contentType, upsert: true });
+
+      if (error) {
+        console.error('Supabase Storage upload error:', error);
+        return null;
+      }
+
+      const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
+      return data?.publicUrl || null;
     } catch (error) {
       console.error('Error uploading video:', error);
       return null;

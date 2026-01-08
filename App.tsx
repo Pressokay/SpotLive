@@ -355,7 +355,17 @@ const App: React.FC = () => {
     ));
   };
 
-  const handlePostSuccess = async (data: { locationName: string; caption: string; hashtags: string[]; media: string; isVideo: boolean; lat: number; lng: number }) => {
+  const handlePostSuccess = async (data: {
+    storyId?: string;
+    locationName: string;
+    caption: string;
+    hashtags: string[];
+    media: string;
+    thumbnail?: string | null;
+    isVideo: boolean;
+    lat: number;
+    lng: number;
+  }) => {
     if (!user) return;
 
     // Détecter le pays depuis les coordonnées
@@ -371,15 +381,21 @@ const App: React.FC = () => {
 
     // CRITICAL FIX: For videos, set videoUrl and use a placeholder/thumbnail for imageUrl
     // For photos, use media as imageUrl directly, videoUrl is undefined
+    // Small inline placeholder to keep `imageUrl` non-null for video posts
+    // (Supabase schema requires `image_url` NOT NULL).
+    const VIDEO_POSTER_PLACEHOLDER =
+      'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="600" height="800"%3E%3Crect fill="%230b0b12" width="600" height="800"/%3E%3Ctext fill="%239ca3af" font-family="sans-serif" font-size="18" x="50%25" y="50%25" text-anchor="middle" dy=".3em"%3EVideo%3C/text%3E%3C/svg%3E';
+
     const newStory: Story = {
-      id: `story_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      id: data.storyId || `story_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       userId: user.id,
       username: user.username,
       userAvatar: user.avatarUrl,
-      // CRITICAL: Set videoUrl for videos (contains base64 data URL)
-      // imageUrl serves as a fallback/thumbnail for videos, or the actual image for photos
-      imageUrl: data.media, // Can be improved with actual thumbnail generation for videos
-      videoUrl: data.isVideo ? data.media : undefined, // CRITICAL: Set videoUrl for videos
+      // Preview vs captured media:
+      // - Photos: `imageUrl` is the actual image (data URL).
+      // - Videos: `videoUrl` is a REAL URL (Supabase Storage), `imageUrl` is a poster thumbnail (data URL).
+      imageUrl: data.isVideo ? (data.thumbnail || VIDEO_POSTER_PLACEHOLDER) : data.media,
+      videoUrl: data.isVideo ? data.media : undefined,
       timestamp: Date.now(),
       caption: data.caption || 'Just vibing',
       vibeTags: data.hashtags.length > 0 ? data.hashtags : ['#SpotLive'],
