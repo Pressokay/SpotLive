@@ -337,7 +337,66 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
           return;
         }
         
+        // CRITICAL FIX: Ensure video element is ready before starting canvas recording
+        // Wait for video to have valid dimensions and be playing
+        if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
+          console.warn('Video not ready, waiting...');
+          // Wait for video to be ready
+          await new Promise<void>((resolve) => {
+            const checkReady = () => {
+              if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+                resolve();
+              } else {
+                setTimeout(checkReady, 100);
+              }
+            };
+            checkReady();
+          });
+        }
+
+        // Update canvas size to match video if needed
+        if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+        }
+
         // Create canvas stream for recording (un-mirrored)
+        // CRITICAL: Start drawing frames BEFORE creating the stream to ensure frames are available
+        let isRecordingActive = true;
+        let framesDrawn = 0;
+        
+        // Animation loop to draw frames from video to canvas (un-mirrored)
+        // The front camera stream is mirrored by hardware/browser, so we flip it here
+        const drawFrame = () => {
+          if (!isRecordingActive || !video || !ctx) return;
+          if (video.readyState < 2) {
+            // Wait for a decodable frame
+            animationFrameRef.current = requestAnimationFrame(drawFrame);
+            return;
+          }
+          
+          // Save context state
+          ctx.save();
+          // Flip horizontally: translate to right edge, then scale X by -1
+          ctx.translate(canvas.width, 0);
+          ctx.scale(-1, 1);
+          // Draw the video frame (the scaleX(-1) un-mirrors the mirrored stream)
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          // Restore context
+          ctx.restore();
+          
+          framesDrawn++;
+          animationFrameRef.current = requestAnimationFrame(drawFrame);
+        };
+        
+        // Start drawing frames immediately (before creating stream)
+        animationFrameRef.current = requestAnimationFrame(drawFrame);
+        canvasRef.current = canvas;
+        
+        // Wait for at least one frame to be drawn before creating stream
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // Now create the canvas stream (frames are already being drawn)
         const canvasStream = canvas.captureStream(30); // 30 fps
         // Preserve audio: canvas.captureStream() is VIDEO-only.
         const mixedStream = new MediaStream([
@@ -362,30 +421,6 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
           ? new MediaRecorder(mixedStream, { mimeType: chosenMimeType })
           : new MediaRecorder(mixedStream);
         
-        // Animation loop to draw frames from video to canvas (un-mirrored)
-        // The front camera stream is mirrored by hardware/browser, so we flip it here
-        let isRecordingActive = true;
-        const drawFrame = () => {
-          if (!isRecordingActive || !video || !ctx) return;
-          if (video.readyState < 2) {
-            // Wait for a decodable frame
-            animationFrameRef.current = requestAnimationFrame(drawFrame);
-            return;
-          }
-          
-          // Save context state
-          ctx.save();
-          // Flip horizontally: translate to right edge, then scale X by -1
-          ctx.translate(canvas.width, 0);
-          ctx.scale(-1, 1);
-          // Draw the video frame (the scaleX(-1) un-mirrors the mirrored stream)
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          // Restore context
-          ctx.restore();
-          
-          animationFrameRef.current = requestAnimationFrame(drawFrame);
-        };
-        
         // Store cleanup function
         const cleanup = () => {
           isRecordingActive = false;
@@ -395,12 +430,19 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
           }
         };
         
-        // Start drawing frames
-        animationFrameRef.current = requestAnimationFrame(drawFrame);
-        canvasRef.current = canvas;
+        // CRITICAL FIX: Add error handler to catch MediaRecorder failures
+        recorder.onerror = (event: any) => {
+          console.error('MediaRecorder error:', event.error || event);
+          cleanup();
+          setIsRecording(false);
+          setUploadError('Recording failed. Please try again.');
+          if (stream) stream.getTracks().forEach(track => track.stop());
+        };
         
         recorder.ondataavailable = (e) => {
-          if (e.data.size > 0) chunksRef.current.push(e.data);
+          if (e.data.size > 0) {
+            chunksRef.current.push(e.data);
+          }
         };
         
         recorder.onstop = () => {
@@ -414,6 +456,16 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
             'video/mp4';
           
           const blob = new Blob(chunksRef.current, { type: mimeType });
+          
+          // CRITICAL FIX: Validate blob before storing
+          if (blob.size === 0) {
+            console.error('Recorded video blob is empty');
+            setUploadError('Recording failed: empty video. Please try again.');
+            setIsRecording(false);
+            if (stream) stream.getTracks().forEach(track => track.stop());
+            return;
+          }
+          
           videoBlobRef.current = blob;
           const url = URL.createObjectURL(blob);
           setCapturedMedia(url);
@@ -421,11 +473,28 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
           if (stream) stream.getTracks().forEach(track => track.stop());
         };
         
-        recorder.start();
-        mediaRecorderRef.current = recorder;
+        // CRITICAL FIX: Start recording with timeslice to ensure data is available
+        // Timeslice of 1000ms ensures data is pushed every second
+        try {
+          recorder.start(1000); // Request data every second
+          mediaRecorderRef.current = recorder;
+        } catch (error) {
+          console.error('Failed to start MediaRecorder:', error);
+          cleanup();
+          setIsRecording(false);
+          setUploadError('Failed to start recording. Please try again.');
+        }
       } else {
         // Back camera: Record directly from stream (no mirroring needed)
         const recorder = new MediaRecorder(stream);
+        
+        // CRITICAL FIX: Add error handler for back camera too
+        recorder.onerror = (event: any) => {
+          console.error('MediaRecorder error (back camera):', event.error || event);
+          setIsRecording(false);
+          setUploadError('Recording failed. Please try again.');
+          if (stream) stream.getTracks().forEach(track => track.stop());
+        };
         
         recorder.ondataavailable = (e) => {
           if (e.data.size > 0) chunksRef.current.push(e.data);
@@ -438,6 +507,16 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
             'video/webm';
           
           const blob = new Blob(chunksRef.current, { type: mimeType });
+          
+          // CRITICAL FIX: Validate blob before storing
+          if (blob.size === 0) {
+            console.error('Recorded video blob is empty (back camera)');
+            setUploadError('Recording failed: empty video. Please try again.');
+            setIsRecording(false);
+            if (stream) stream.getTracks().forEach(track => track.stop());
+            return;
+          }
+          
           videoBlobRef.current = blob;
           const url = URL.createObjectURL(blob);
           setCapturedMedia(url);
@@ -445,8 +524,15 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
           if (stream) stream.getTracks().forEach(track => track.stop());
         };
         
-        recorder.start();
-        mediaRecorderRef.current = recorder;
+        // CRITICAL FIX: Start with timeslice for back camera too
+        try {
+          recorder.start(1000); // Request data every second
+          mediaRecorderRef.current = recorder;
+        } catch (error) {
+          console.error('Failed to start MediaRecorder (back camera):', error);
+          setIsRecording(false);
+          setUploadError('Failed to start recording. Please try again.');
+        }
       }
 
       // Auto-stop after 15 seconds
@@ -522,17 +608,33 @@ const CreateView: React.FC<CreateViewProps> = ({ onClose, onPostSuccess }) => {
       // Upload to Supabase Storage and store a real URL in the story.
       if (mode === 'VIDEO' && videoBlobRef.current) {
         try {
+          // CRITICAL FIX: Validate blob before upload
+          if (videoBlobRef.current.size === 0) {
+            throw new Error('Video blob is empty - recording may have failed');
+          }
+          
+          console.log('Uploading video:', {
+            size: videoBlobRef.current.size,
+            type: videoBlobRef.current.type,
+            storyId
+          });
+          
           // Generate a lightweight poster thumbnail (stored as data URL in DB).
           // This keeps `image_url` non-null and gives a stable poster frame.
           thumbnail = await mediaService.createVideoThumbnail(videoBlobRef.current);
 
           // Upload video blob -> Supabase Storage public URL (or null on failure)
           const uploadedUrl = await mediaService.uploadVideo(videoBlobRef.current, storyId);
-          if (!uploadedUrl) throw new Error('Video upload failed');
+          if (!uploadedUrl) {
+            console.error('Upload returned null URL');
+            throw new Error('Video upload failed: no URL returned');
+          }
+          
+          console.log('Video uploaded successfully:', uploadedUrl);
           mediaUrl = uploadedUrl;
         } catch (error) {
-          console.error('Error converting video:', error);
-          setUploadError('Video failed to upload. Please retry.');
+          console.error('Error uploading video:', error);
+          setUploadError(`Video upload failed: ${error instanceof Error ? error.message : 'Unknown error'}. Please retry.`);
           setLoading(false);
           return;
         }

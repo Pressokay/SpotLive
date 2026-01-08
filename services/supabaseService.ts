@@ -470,23 +470,53 @@ export const mediaService = {
    */
   async uploadVideo(blob: Blob, storyId: string): Promise<string | null> {
     try {
+      // CRITICAL FIX: Validate blob before upload
+      if (!blob || blob.size === 0) {
+        console.error('Invalid blob: empty or null');
+        return null;
+      }
+      
       const bucket = 'stories';
       const contentType = blob.type || 'video/mp4';
       const extFromType = contentType.includes('/') ? contentType.split('/')[1] : 'mp4';
       const fileExt = (extFromType || 'mp4').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'mp4';
       const filePath = `videos/${storyId}.${fileExt}`;
 
-      const { error } = await supabase.storage
+      console.log('Uploading to Supabase Storage:', {
+        bucket,
+        filePath,
+        size: blob.size,
+        contentType
+      });
+
+      const { data: uploadData, error } = await supabase.storage
         .from(bucket)
         .upload(filePath, blob, { contentType, upsert: true });
 
       if (error) {
-        console.error('Supabase Storage upload error:', error);
+        console.error('Supabase Storage upload error:', {
+          message: error.message,
+          statusCode: (error as any).statusCode,
+          error
+        });
         return null;
       }
 
-      const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
-      return data?.publicUrl || null;
+      if (!uploadData) {
+        console.error('Upload succeeded but no data returned');
+        return null;
+      }
+
+      const { data: urlData } = supabase.storage.from(bucket).getPublicUrl(filePath);
+      const publicUrl = urlData?.publicUrl || null;
+      
+      if (!publicUrl) {
+        console.error('Failed to get public URL for uploaded file');
+        return null;
+      }
+      
+      console.log('Video uploaded successfully, public URL:', publicUrl);
+      return publicUrl;
     } catch (error) {
       console.error('Error uploading video:', error);
       return null;
